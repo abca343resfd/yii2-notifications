@@ -19,6 +19,12 @@ var Notifications = (function(opts) {
         markAsReadLabel: 'mark as read'
     }, opts);
 
+    // Whether a realtime transport is in charge of the badge right now. Set the moment we decide to
+    // use one — before the connection is even confirmed live, the same optimistic choice the
+    // queue-job counter's realtime component makes — so `startPoll()` never arms a timer that would
+    // race the push. Reverts to false only if the transport itself reports it has given up.
+    var realtimeActive = false;
+
     /**
      * Renders a notification row
      *
@@ -47,8 +53,6 @@ var Notifications = (function(opts) {
             timeout: opts.xhrTimeout,
             //loader: list.parent(),
             success: function(data) {
-                var seen = 0;
-
                 if($.isEmptyObject(data.list)){
                     list.find('.empty-row span').show();
                 }
@@ -83,14 +87,13 @@ var Notifications = (function(opts) {
                         });
                     }
 
-                    if(object.seen == '0'){
-                        seen += 1;
-                    }
-
                     list.append(item);
                 });
 
-                setCount(seen, true);
+                // Absolute value from the server, not a client-side decrement: this AJAX call is
+                // itself what triggers the server's seen-update, which also triggers a realtime push
+                // of the same absolute count — the two used to race with no defined ordering.
+                setCount(data.count);
 
                 startPoll(true);
             }
@@ -158,6 +161,13 @@ var Notifications = (function(opts) {
 
     var _updateTimeout;
     var startPoll = function(restart) {
+        // A realtime transport is already keeping the badge current; arming a timer on top of it
+        // would just be redundant traffic, and it's exactly what a push feature is meant to remove.
+        // Guarding here, in the single place that arms the timer, covers every caller (the initial
+        // call below, showList()'s success and updateCount()'s success) without repeating the check.
+        if (realtimeActive) {
+            return;
+        }
         if (restart && _updateTimeout){
             clearTimeout(_updateTimeout);
         }
@@ -166,7 +176,36 @@ var Notifications = (function(opts) {
         }, opts.pollInterval);
     };
 
-    // Fire the initial poll
+    // Looked up now rather than at call time: the transport is a separate script, and a missing or
+    // broken one must leave the badge polling instead of throwing during setup. Returns whether the
+    // transport was actually usable, so the caller can decide whether polling should still start.
+    var initRealtime = function() {
+        var realtime = opts.realtime;
+        var client = realtime && window[realtime.client];
+        if (!client || typeof client.subscribe !== 'function') {
+            return false;
+        }
+        client.subscribe(realtime.topic, function(body) {
+            // A malformed/incomplete frame (e.g. a stale publisher during a rolling deploy) must be
+            // ignored rather than misread as count 0 — the badge stays at its last known value and
+            // waits for the next, well-formed frame instead of misreporting to the user.
+            if (!body || typeof body.count !== 'number') {
+                return;
+            }
+            setCount(body.count);
+        });
+        if (typeof client.onUnavailable === 'function') {
+            client.onUnavailable(function() {
+                realtimeActive = false;
+                startPoll(true);
+            });
+        }
+        return true;
+    };
+
+    realtimeActive = initRealtime();
+
+    // Fire the initial poll (a no-op if initRealtime() above just took over)
     startPoll();
 
 });

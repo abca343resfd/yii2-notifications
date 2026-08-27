@@ -183,6 +183,39 @@ class Notifications extends \yii\db\ActiveRecord
     }
 
     /**
+     * Counts the unseen notifications for one explicit user, across every channel.
+     *
+     * Takes the user as an argument rather than reading `Yii::$app->getUser()`: this is called from
+     * {@see \webzop\notifications\Module::notifyCounter()}, which fires from console commands and
+     * queue workers on behalf of whoever the notification targets, never the ambient current user.
+     * `widgets\Notifications::getCountUnseen()` delegates here too, so the polled value and the
+     * pushed value can never disagree.
+     *
+     * **`send_at` is nullable, and an ordinary (non-scheduled) notification always has it `NULL`** —
+     * `beforeValidate()` just copies `Notification::$sendAt`, which defaults to `null` and is only
+     * ever set by a caller opting into delayed sending (see `Module::send()`'s `sendAt > now` check
+     * and `commands/Worker.php`). `NULL <= '<now>'` is unknown in SQL, so a plain `<=` comparison
+     * silently drops every immediate notification — from 2021 (v0.3.1, which introduced both the
+     * `send_at` column and this filter in the same commit) until this fix, the filter compared against
+     * a **misspelled** column (`sent_at`, which never existed) for its first ~17 months, then a 2023
+     * "typo fix" corrected the name without ever noticing rows with a `NULL` `send_at` were still
+     * excluded — so this was never a deliberate "immediate notifications don't count" rule, just an
+     * unhandled case. `OR send_at IS NULL` restores the original intent: only a notification actually
+     * scheduled for the *future* is held back.
+     *
+     * @param integer $user_id
+     * @return integer
+     */
+    public static function countUnseenFor($user_id)
+    {
+        return (int) static::find()
+            ->andWhere(['or', 'user_id = 0', 'user_id = :user_id'], [':user_id' => $user_id])
+            ->andWhere(['or', ['send_at' => null], ['<=', 'send_at', date('Y-m-d H:i:s')]])
+            ->andWhere(['seen' => false])
+            ->count();
+    }
+
+    /**
      * Decode of the attachment column only if it's not of type `json` on the DB
      */
     protected function encodeAttachments()

@@ -1,5 +1,20 @@
 # CHANGELOG
 
+## Unreleased
+
+- Added realtime push for the `screen` channel badge, via `Module::$counter_notifier`
+  (`base\NotificationCounterNotifier`) and new `realtimeClient`/`realtimeTopic`/`realtimeAsset`
+  widget options. Falls back to polling when unset, same as before.
+- `model\Notifications::countUnseenFor()` is now the single query behind the badge count, shared by
+  polling and push.
+- Fixed the badge racing itself when the dropdown is opened (`showList()`'s client-side decrement vs
+  the server-side update).
+- `DefaultController` now notifies the counter after its raw-SQL `seen` updates, which never fired an
+  ActiveRecord event.
+- Fixed: notifications with no `send_at` (i.e. not scheduled) were never counted or listed by the
+  badge, since `send_at <= now` excludes `NULL` rows in SQL.
+- `Module::send()` now publishes the counter once per call instead of once per channel.
+
 ## 0.3.6 Jul 18, 2024
 
 - CS fixes

@@ -289,6 +289,63 @@ So you can call the Notifications widget in your app layout to show generated no
 </div>
 ```
 
+#### Realtime notification counter
+
+By default the widget **polls** `notifications/default/count` every `pollInterval` milliseconds.
+That number can instead be **pushed**, so the badge changes the moment a notification is created or
+seen — the same pattern documented for `yetopen/yii2-queue-manager`'s job counter, and just as
+optional. The transport is deliberately not part of this extension.
+
+**1. Server side: a notifier.** Implement `webzop\notifications\base\NotificationCounterNotifier`
+and publish the value however your application publishes things:
+
+```php
+class NotificationCounterPublisher extends BaseObject implements NotificationCounterNotifier
+{
+    public function notify($user_id, $count)
+    {
+        MyTransport::publish("/topic/notifications/$user_id", ['action' => 'update', 'count' => $count]);
+    }
+}
+```
+
+Then declare it in the module config — no `bootstrap` array entry is needed, since
+`webzop\notifications\Bootstrap` (registered via this package's `composer.json` `extra.bootstrap`)
+already runs unconditionally on every request, web or console:
+
+```php
+'modules' => [
+    'notifications' => [
+        'class' => webzop\notifications\Module::class,
+        // ...
+        'counter_notifier' => NotificationCounterPublisher::class,
+    ],
+],
+```
+
+The extension recomputes the counter (across every channel, exactly like `getCountUnseen()`)
+whenever a notification is created for a user, or whenever `DefaultController` clears `seen` for
+them (opening the dropdown, "mark all as read"), and calls `notify()` with the **absolute** new
+value — never a delta. Exceptions thrown by the notifier are logged and swallowed: a transport that
+is down must never fail whatever wrote the notification. A notification with `userId = 0`
+(broadcast to everyone) is never pushed — there is no single topic to publish it to without
+enumerating every user — polling remains its only delivery path.
+
+**2. Client side: the transport, named on the widget.**
+
+```php
+echo \webzop\notifications\widgets\Notifications::widget([
+    'pollInterval' => 60000,          // only the fallback rhythm now
+    'realtimeAsset' => MyTransportAsset::class,
+    'realtimeClient' => 'myTransport',                    // window.myTransport
+    'realtimeTopic' => '/topic/notifications/'.Yii::$app->user->id,
+]);
+```
+
+`window.myTransport` must expose `subscribe(topic, callback)`, called back with the message body
+(`{"action": "update", "count": 3}`), and may expose `onUnavailable(callback)` to report that it has
+definitively failed — the widget falls back to polling only then. Set neither parameter and
+everything behaves exactly as it did before.
 
 ### Web Push Notification Channel
 

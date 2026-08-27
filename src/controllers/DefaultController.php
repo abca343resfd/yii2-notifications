@@ -68,13 +68,19 @@ class DefaultController extends Controller
         $userId = Yii::$app->getUser()->getId();
         $list = NotificationModel::find()
             ->andWhere(['or', 'user_id = 0', 'user_id = :user_id'], [':user_id' => $userId])
-            ->andWhere(['<=', 'send_at', date('Y-m-d H:i:s')])
+            // NULL-safe on purpose: an ordinary (non-scheduled) notification has `send_at = NULL`, and
+            // must show up here just like it counts in `NotificationModel::countUnseenFor()` below —
+            // see that method's docblock for why a plain `<=` used to drop every one of them.
+            ->andWhere(['or', ['send_at' => null], ['<=', 'send_at', date('Y-m-d H:i:s')]])
             ->orderBy(['id' => SORT_DESC])
             ->limit(10)
             ->asArray()
             ->all();
         $notifs = $this->prepareNotifications($list);
-        $this->ajaxResponse(['list' => $notifs]);
+        // The fresh absolute count, alongside the list: `showList()` in notifications.js uses it to
+        // set the badge instead of computing a client-side decrement, which used to race the realtime
+        // push triggered by prepareNotifications()' own seen-update below.
+        $this->ajaxResponse(['list' => $notifs, 'count' => NotificationModel::countUnseenFor($userId)]);
     }
 
     public function actionCount()
@@ -101,6 +107,10 @@ class DefaultController extends Controller
             ['read' => true, 'seen' => true],
             ['user_id' => Yii::$app->user->id]
             )->execute();
+        // Raw SQL above, so no ActiveRecord event fires for it (see Module::notifyCounter()'s
+        // docblock) — called directly instead, and unambiguous since the update itself is already
+        // scoped to this one user.
+        Yii::$app->getModule('notifications')->notifyCounter(Yii::$app->user->id);
         if(Yii::$app->getRequest()->getIsAjax()){
             return $this->ajaxResponse(1);
         }
@@ -138,6 +148,10 @@ class DefaultController extends Controller
 
         if(!empty($seen)){
             Yii::$app->getDb()->createCommand()->update('{{%notifications}}', ['seen' => true], ['id' => $seen])->execute();
+            // Raw SQL above bypasses ActiveRecord, so no AR event fires for it — called directly
+            // instead. Both callers of this method (actionIndex/actionList) already scope $list to
+            // the current user, so there is exactly one user to notify.
+            Yii::$app->getModule('notifications')->notifyCounter(Yii::$app->getUser()->getId());
         }
 
         return $notifs;
